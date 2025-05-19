@@ -1,8 +1,7 @@
 #!/bin/bash
 
-CURRENTDIR=$(pwd)
+# Complete I2P on Tails installation script with fixed persistence
 
-# Script needs to be run as root
 if [[ $(/usr/bin/id -u) -ne 0 ]]; then
     echo "Script must be run as root. Please use a root terminal or sudo -i"
     exit 1
@@ -11,7 +10,7 @@ fi
 clear
 echo "**********************************"
 echo "*                                *"
-echo "*    I2P on Tails script v0.5    *"
+echo "*    I2P on Tails script v0.6    *"
 echo "*           May 2025             *"
 echo "*                                *"
 echo "*--------------------------------*"
@@ -85,11 +84,9 @@ apt-get update
 apt-get install -y libboost-program-options1.74.0 libminiupnpc17
 dpkg -i i2pd_2.56.0-1bookworm1_amd64.deb || apt-get -f -y install
 
-# Mark packages for persistence if we have a persistent volume
-if [ "$TEMP_INSTALL" = false ]; then
-    echo "[+] Marking I2P packages for persistence..."
-    apt-mark manual i2pd libboost-program-options1.74.0 libminiupnpc17
-fi
+# Mark packages for persistence
+echo "[+] Marking I2P packages for persistence..."
+apt-mark manual i2pd libboost-program-options1.74.0 libminiupnpc17
 
 echo "[+] Stopping I2Pd service..."
 systemctl stop i2pd
@@ -347,6 +344,12 @@ proxy = socks://localhost:9050
 # defaulturl = http://joajgazyztfssty4w2on5oaqksz6tqoxbduy553y34mf4byv6gpq.b32.i2p/export/alive-hosts.txt
 EOL
 
+# Also save configuration to persistence location
+if [ "$TEMP_INSTALL" = false ]; then
+    mkdir -p /live/persistence/TailsData_unlocked/etc/i2pd
+    cp /etc/i2pd/i2pd.conf /live/persistence/TailsData_unlocked/etc/i2pd/
+fi
+
 # Clear out log
 rm -rf /var/log/i2pd/i2pd.log
 
@@ -402,32 +405,93 @@ echo "[+] Starting local server to handle .i2p proxifying..."
 
 sudo -u amnesia python3 -m http.server --bind 10.200.1.1 --directory "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac" 8181 >/dev/null 2>&1 &
 
-# Create enable/disable scripts with enhanced browser configuration
-echo "[+] Creating enable/disable scripts..."
-
-cat > /home/amnesia/.i2pd_script/enable_i2p.sh << 'EOL'
+# Create a robust startup script that will run at boot
+echo "[+] Creating comprehensive startup script..."
+cat > /home/amnesia/.i2pd_script/i2p-startup.sh << 'EOL'
 #!/bin/bash
 
-# Kill Tor Browser if running
-pkill -f firefox || true
+# I2P comprehensive startup script for Tails persistence
+# This script ensures I2P is fully functional after Tails boot
 
-# Stop existing services
-pkill python3
-pkill http.server
+# Wait for system to fully initialize
+sleep 30
+
+# Logging
+log_file="/tmp/i2p-startup.log"
+exec > >(tee -a "$log_file") 2>&1
+
+echo "$(date): I2P startup script beginning"
+
+# Check for required files
+if [ ! -f "/home/amnesia/.i2pd_script/tails-create-netns-i2p" ]; then
+    echo "Error: Required files missing. I2P not properly installed."
+    notify-send "I2P Error" "Required files missing. Please reinstall I2P."
+    exit 1
+fi
+
+# Stop any potentially running instances
+echo "Stopping any existing services..."
+pkill python3 || true
+pkill -f "http.server" || true
 systemctl stop i2pd || true
-sudo -u root /usr/local/lib/tails-create-netns stop || true
+/usr/local/lib/tails-create-netns stop || true
 
-# Start I2P services
-sudo -u root /home/amnesia/.i2pd_script/tails-create-netns-i2p start
-sudo -u amnesia python3 -m http.server --bind 10.200.1.1 --directory "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac" 8181 >/dev/null 2>&1 &
+# Create directories if they don't exist
+mkdir -p "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac"
+
+# Copy i2pd.conf from persistent storage if available
+if [ -f "/live/persistence/TailsData_unlocked/etc/i2pd/i2pd.conf" ]; then
+    echo "Restoring i2pd configuration from persistence..."
+    cp "/live/persistence/TailsData_unlocked/etc/i2pd/i2pd.conf" /etc/i2pd/
+fi
+
+# Set up network namespace
+echo "Setting up network namespace..."
+/home/amnesia/.i2pd_script/tails-create-netns-i2p start
+
+# Set up firewall rules
+echo "Setting up firewall rules..."
+iptables -I INPUT 3 -p tcp -s 10.200.1.2 -d 10.200.1.1 -i veth-tbb -j ACCEPT -m multiport --destination-ports 4447,7070,8181
+iptables -I OUTPUT 3 -p tcp -j ACCEPT -m tcp --tcp-flags SYN,ACK,FIN,RST SYN -m state --state NEW -m owner --uid-owner i2pd
+
+# Start the I2P service
+echo "Starting I2P service..."
+systemctl daemon-reload
 systemctl start i2pd
 
-# Create user.js with enhanced HTTPS-only mode disabling
+# Create proxy.pac file if it doesn't exist
+if [ ! -f "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac/proxy.pac" ]; then
+    echo "Creating proxy.pac file..."
+    cat > "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac/proxy.pac" << 'EOF'
+function FindProxyForURL(url, host)
+{
+  // Direct access to I2P console
+  if (shExpMatch(host, "10.200.1.1") || shExpMatch(host, "127.0.0.1:7070")) {
+    return "DIRECT";
+  }
+  // Route I2P traffic through I2P
+  if (shExpMatch(host, "*.i2p$")) {
+    return "SOCKS 127.0.0.1:4447";
+  }
+  // Everything else through Tor
+  return "SOCKS 127.0.0.1:9050";
+}
+EOF
+    chmod +x "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac/proxy.pac"
+fi
+
+# Start proxy server
+echo "Starting proxy server..."
+python3 -m http.server --bind 10.200.1.1 --directory "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac" 8181 >/dev/null 2>&1 &
+
+# Configure Tor Browser
+echo "Configuring Tor Browser..."
 PROFILE_DIR="/home/amnesia/.tor-browser/profile.default"
-cat > "$PROFILE_DIR/user.js" << 'EOF'
+if [ -d "$PROFILE_DIR" ]; then
+    cat > "$PROFILE_DIR/user.js" << 'EOF'
 // I2P Configuration - Added by installer
 user_pref("extensions.torbutton.use_nontor_proxy", true);
-user_pref("network.proxy.allow_hijacking_localhost", false);
+user_pref("network.proxy.allow_hijacking_localhost", false); 
 user_pref("network.proxy.socks", "");
 user_pref("network.proxy.autoconfig_url", "http://127.0.0.1:8181/proxy.pac");
 user_pref("network.proxy.type", 2);
@@ -439,6 +503,77 @@ user_pref("dom.security.https_only_mode_ever_enabled", false);
 user_pref("dom.security.https_only_mode_pbm", false);
 user_pref("dom.security.https_only_mode_ever_enabled_pbm", false);
 EOF
+    chown amnesia:amnesia "$PROFILE_DIR/user.js"
+    chmod 600 "$PROFILE_DIR/user.js"
+fi
+
+# Create desktop shortcuts if they don't exist
+if [ ! -f "/home/amnesia/Desktop/enable_i2p.desktop" ]; then
+    echo "Creating desktop shortcuts..."
+    
+    cat > /home/amnesia/Desktop/enable_i2p.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Exec=/home/amnesia/.i2pd_script/enable_i2p.sh
+Name=Enable I2P
+GenericName=I2P
+StartupNotify=true
+Categories=Network;
+EOF
+
+    cat > /home/amnesia/Desktop/disable_i2p.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Exec=/home/amnesia/.i2pd_script/disable_i2p.sh
+Name=Disable I2P
+GenericName=I2P
+StartupNotify=true
+Categories=Network;
+EOF
+
+    cat > /home/amnesia/Desktop/i2p-console.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Exec=firefox http://10.200.1.1:7070
+Name=I2P Console
+Comment=Access I2P Router Console
+Icon=web-browser
+Terminal=false
+Categories=Network;
+EOF
+
+    chmod +x /home/amnesia/Desktop/*.desktop
+    chown amnesia:amnesia /home/amnesia/Desktop/*.desktop
+fi
+
+# Verify that I2P is running
+sleep 5
+if systemctl is-active --quiet i2pd; then
+    echo "I2P service is running."
+    notify-send "I2P Enabled" "I2P has been successfully started. You can access the console at http://10.200.1.1:7070"
+else
+    echo "Error: I2P service failed to start."
+    systemctl status i2pd
+    notify-send "I2P Error" "I2P service failed to start. Check logs for details."
+fi
+
+echo "$(date): I2P startup script completed"
+EOL
+
+chmod +x /home/amnesia/.i2pd_script/i2p-startup.sh
+chown amnesia:amnesia /home/amnesia/.i2pd_script/i2p-startup.sh
+
+# Create enable/disable scripts with enhanced browser configuration
+echo "[+] Creating enable/disable scripts..."
+
+cat > /home/amnesia/.i2pd_script/enable_i2p.sh << 'EOL'
+#!/bin/bash
+
+# Kill Tor Browser if running
+pkill -f firefox || true
+
+# Run the comprehensive startup script
+sudo /home/amnesia/.i2pd_script/i2p-startup.sh
 
 echo '[+] I2P enabled.'
 echo '[+] Browser has been configured automatically for I2P access.'
@@ -458,9 +593,9 @@ pkill -f firefox || true
 # Stop I2P services
 systemctl stop i2pd || true
 pkill python3 || true
-pkill http.server || true
-sudo -u root /home/amnesia/.i2pd_script/tails-create-netns-i2p stop || true
-sudo -u root /usr/local/lib/tails-create-netns start || true
+pkill -f "http.server" || true
+sudo /usr/local/lib/tails-create-netns stop || true
+sudo /usr/local/lib/tails-create-netns start || true
 
 # Remove user.js to restore default browser configuration
 PROFILE_DIR="/home/amnesia/.tor-browser/profile.default"
@@ -541,62 +676,121 @@ EOF
 chown amnesia:amnesia "$PROFILE_DIR/user.js"
 chmod 600 "$PROFILE_DIR/user.js"
 
-# Set up persistence if requested and available
+# Create a proper persistence setup for the admin password script
 if [ "$TEMP_INSTALL" = false ]; then
-    echo "[+] Setting up persistence..."
+    echo "[+] Setting up persistent admin password script..."
     
-    # Create directories in the correct Tails persistence location
-    mkdir -pv /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script
-    mkdir -pv /live/persistence/TailsData_unlocked/dotfiles/.config/autostart
-    mkdir -pv "/live/persistence/TailsData_unlocked/dotfiles/Tor Browser/localhost-tbb-proxy-pac"
-    mkdir -pv /live/persistence/TailsData_unlocked/dotfiles/Desktop
-    mkdir -pv /live/persistence/TailsData_unlocked/dotfiles/.tor-browser/profile.default
+    mkdir -p /live/persistence/TailsData_unlocked/dotfiles/.config/tails-i2p
     
-    # Copy all script files to persistent location
-    cp /home/amnesia/.i2pd_script/enable_i2p.sh /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/
-    cp /home/amnesia/.i2pd_script/disable_i2p.sh /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/
-    cp /home/amnesia/.i2pd_script/tails-create-netns-i2p /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/
+    cat > /live/persistence/TailsData_unlocked/dotfiles/.config/tails-i2p/admin-i2p-setup.sh << 'EOL'
+#!/bin/bash
+
+# This script runs with admin privileges at Tails startup
+# It's called from the user autostart script
+
+# Logging
+log_file="/tmp/i2p-admin-setup.log"
+exec > >(tee -a "$log_file") 2>&1
+
+echo "$(date): I2P admin setup script beginning"
+
+# Restore configuration if available
+if [ -f "/live/persistence/TailsData_unlocked/etc/i2pd/i2pd.conf" ]; then
+    echo "Copying I2P configuration from persistence..."
+    cp /live/persistence/TailsData_unlocked/etc/i2pd/i2pd.conf /etc/i2pd/
+fi
+
+# Mark packages for persistence
+echo "Marking I2P packages for persistence..."
+apt-mark manual i2pd libboost-program-options1.74.0 libminiupnpc17
+
+echo "$(date): I2P admin setup completed"
+EOL
+
+    chmod +x /live/persistence/TailsData_unlocked/dotfiles/.config/tails-i2p/admin-i2p-setup.sh
+    chown -R amnesia:amnesia /live/persistence/TailsData_unlocked/dotfiles/.config/tails-i2p
+
+    # Create the user script that uses sudo to run the admin script
+    mkdir -p /live/persistence/TailsData_unlocked/dotfiles/.config/autostart
     
-    # Make them executable
-    chmod +x /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/*.sh
-    chmod +x /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/tails-create-netns-i2p
-    
-    # Copy desktop files
-    cp /home/amnesia/Desktop/enable_i2p.desktop /live/persistence/TailsData_unlocked/dotfiles/Desktop/
-    cp /home/amnesia/Desktop/disable_i2p.desktop /live/persistence/TailsData_unlocked/dotfiles/Desktop/
-    cp /home/amnesia/Desktop/i2p-console.desktop /live/persistence/TailsData_unlocked/dotfiles/Desktop/
-    chmod +x /live/persistence/TailsData_unlocked/dotfiles/Desktop/*.desktop
-    
-    # Copy proxy.pac file
-    cp "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac/proxy.pac" "/live/persistence/TailsData_unlocked/dotfiles/Tor Browser/localhost-tbb-proxy-pac/"
-    chmod +x "/live/persistence/TailsData_unlocked/dotfiles/Tor Browser/localhost-tbb-proxy-pac/proxy.pac"
-    
-    # Create autostart entry
     cat > /live/persistence/TailsData_unlocked/dotfiles/.config/autostart/i2p-autostart.desktop << 'EOL'
 [Desktop Entry]
 Type=Application
-Exec=/home/amnesia/.i2pd_script/enable_i2p.sh
+Exec=/home/amnesia/.config/autostart/run-i2p.sh
 Name=I2P Autostart
 Comment=Automatically starts I2P when Tails boots
-Icon=network-wireless
 Terminal=false
 Hidden=false
 X-GNOME-Autostart-enabled=true
 EOL
+
     chmod +x /live/persistence/TailsData_unlocked/dotfiles/.config/autostart/i2p-autostart.desktop
     
-    # Create browser configuration
-    cp "$PROFILE_DIR/user.js" /live/persistence/TailsData_unlocked/dotfiles/.tor-browser/profile.default/
+    cat > /live/persistence/TailsData_unlocked/dotfiles/.config/autostart/run-i2p.sh << 'EOL'
+#!/bin/bash
+
+# Run the admin script with sudo (this will prompt for password)
+sudo /home/amnesia/.config/tails-i2p/admin-i2p-setup.sh &
+
+# Then run the normal startup script
+/home/amnesia/.i2pd_script/i2p-startup.sh &
+EOL
+
+    chmod +x /live/persistence/TailsData_unlocked/dotfiles/.config/autostart/run-i2p.sh
     
-    # Set correct ownership
+    # Copy all scripts to the persistent location
+    mkdir -p /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script
+    cp /home/amnesia/.i2pd_script/* /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/
+    chmod +x /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/*.sh
+    chmod +x /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script/tails-create-netns-i2p
+    
+    # Copy proxy.pac file
+    mkdir -p "/live/persistence/TailsData_unlocked/dotfiles/Tor Browser/localhost-tbb-proxy-pac"
+    cp "/home/amnesia/Tor Browser/localhost-tbb-proxy-pac/proxy.pac" "/live/persistence/TailsData_unlocked/dotfiles/Tor Browser/localhost-tbb-proxy-pac/"
+    
+    # Copy desktop files
+    mkdir -p /live/persistence/TailsData_unlocked/dotfiles/Desktop
+    cp /home/amnesia/Desktop/enable_i2p.desktop /live/persistence/TailsData_unlocked/dotfiles/Desktop/
+    cp /home/amnesia/Desktop/disable_i2p.desktop /live/persistence/TailsData_unlocked/dotfiles/Desktop/
+    cp /home/amnesia/Desktop/i2p-console.desktop /live/persistence/TailsData_unlocked/dotfiles/Desktop/
+    
+    # Set proper permissions for all persistence files
     chown -R amnesia:amnesia /live/persistence/TailsData_unlocked/dotfiles/.i2pd_script
     chown -R amnesia:amnesia /live/persistence/TailsData_unlocked/dotfiles/.config
     chown -R amnesia:amnesia /live/persistence/TailsData_unlocked/dotfiles/Desktop
     chown -R amnesia:amnesia "/live/persistence/TailsData_unlocked/dotfiles/Tor Browser"
-    chown -R amnesia:amnesia /live/persistence/TailsData_unlocked/dotfiles/.tor-browser
     
     echo "[+] Persistence setup complete. I2P will be available after restart."
+    
+    # Create a README file with instructions
+    cat > /home/amnesia/Desktop/I2P-PERSISTENCE-README.txt << 'EOL'
+I2P PERSISTENCE INFORMATION
+
+Your I2P installation has been configured to persist across Tails restarts.
+When you restart Tails and unlock your persistent volume, you'll need to:
+
+1. Enter your administration password when prompted after startup
+   (This is needed to properly configure I2P's system settings)
+
+2. If I2P doesn't start automatically, click the "Enable I2P" icon on your desktop
+
+3. Wait 2-5 minutes for I2P to properly connect to the network
+
+IMPORTANT: I2P will only work if you've unlocked your persistent volume at boot time.
+
+If you have any issues, try manually running:
+/home/amnesia/.i2pd_script/enable_i2p.sh
+
+Enjoy using I2P on Tails!
+EOL
+
+    chmod +x /home/amnesia/Desktop/I2P-PERSISTENCE-README.txt
+    chown amnesia:amnesia /home/amnesia/Desktop/I2P-PERSISTENCE-README.txt
 fi
+
+# Run the startup script to complete the installation
+echo "[+] Running startup script to complete installation..."
+/home/amnesia/.i2pd_script/i2p-startup.sh
 
 echo ""
 echo "IMPORTANT: Wait 2-5 minutes for I2P to connect properly."
@@ -634,9 +828,9 @@ if [[ "$persistence_choice" == "2" ]]; then
         echo ""
         echo "I2P has been properly set up with persistence!"
         echo "When you restart Tails and unlock your persistent volume,"
-        echo "I2P settings will be automatically restored."
+        echo "I2P will be available after entering your admin password when prompted."
         echo ""
-        echo "You can verify that persistence is working after the next restart."
+        echo "A README file has been created on your desktop with more information."
         echo ""
     fi
     echo "###############################"
