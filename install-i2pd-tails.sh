@@ -12,7 +12,7 @@ clear
 echo "**********************************"
 echo "*                                *"
 echo "*    I2P on Tails script v0.4    *"
-echo "*           May 2025             *"
+echo "*           May 2025            *"
 echo "*                                *"
 echo "*--------------------------------*"
 echo "*    Updated for Tails 6.x       *"
@@ -23,7 +23,54 @@ echo "*       Github: itsOwen          *"
 echo "*      Thanks: Plowsker          *"
 echo "*                                *"
 echo "**********************************"
-sleep 2
+sleep 1
+
+# Ask user about persistence
+echo ""
+echo "How would you like to install I2P?"
+echo ""
+echo "1) Normal installation (for one-time use, will be lost after reboot)"
+echo "2) Persistence-enabled installation (will persist across reboots)"
+echo ""
+read -p "Enter your choice (1 or 2): " persistence_choice
+
+if [[ "$persistence_choice" == "2" ]]; then
+    echo ""
+    echo "You've chosen persistence-enabled installation."
+    echo ""
+    echo "Important: For persistence to work properly, you'll need to:"
+    echo "- Create a persistent volume in Tails (if not already done)"
+    echo "- Enable at least the 'Dotfiles' and 'Additional Software' features"
+    echo ""
+    echo "Do you already have a persistent volume with these features enabled? (y/n)"
+    read -p "> " persistence_exists
+    
+    if [[ "$persistence_exists" != "y" ]]; then
+        echo ""
+        echo "Please follow these steps to prepare your persistence volume:"
+        echo ""
+        echo "1. Finish this installation first (it will work for this session)"
+        echo "2. Shut down Tails"
+        echo "3. Restart Tails and at the welcome screen, choose 'Configure persistent volume'"
+        echo "4. Create a persistent volume with a strong password"
+        echo "5. Enable at least the 'Dotfiles' and 'Additional Software' features"
+        echo "6. Restart Tails and unlock your persistent volume"
+        echo "7. Run the persistence setup script that will be created on your desktop"
+        echo ""
+        echo "Would you like to continue with the installation now? (y/n)"
+        read -p "> " continue_install
+        
+        if [[ "$continue_install" != "y" ]]; then
+            echo "Installation cancelled. Please restart when ready."
+            exit 0
+        fi
+    fi
+else
+    echo ""
+    echo "You've chosen normal installation."
+    echo "I2P will work for this session but will be forgotten after restart."
+    echo ""
+fi
 
 # Create necessary directories
 mkdir -p /home/amnesia/.i2pd_script
@@ -465,25 +512,6 @@ chown amnesia:amnesia /home/amnesia/Desktop/enable_i2p.desktop
 chown amnesia:amnesia /home/amnesia/Desktop/disable_i2p.desktop
 chown amnesia:amnesia /home/amnesia/Desktop/i2p-console.desktop
 
-# Create autostart entry for I2P
-echo "[+] Creating autostart entry for I2P..."
-sudo -u amnesia mkdir -p /home/amnesia/.config/autostart
-
-cat > /home/amnesia/.config/autostart/i2p-autostart.desktop << 'EOL'
-[Desktop Entry]
-Type=Application
-Exec=/home/amnesia/.i2pd_script/enable_i2p.sh
-Name=I2P Autostart
-Comment=Automatically starts I2P when Tails boots with persistence
-Icon=network-wireless
-Terminal=false
-Hidden=false
-X-GNOME-Autostart-enabled=true
-EOL
-
-chmod +x /home/amnesia/.config/autostart/i2p-autostart.desktop
-chown amnesia:amnesia /home/amnesia/.config/autostart/i2p-autostart.desktop
-
 # Now configure the browser using the enhanced user.js approach
 echo "[+] Configuring browser with enhanced user.js approach..."
 PROFILE_DIR="/home/amnesia/.tor-browser/profile.default"
@@ -507,57 +535,203 @@ EOF
 chown amnesia:amnesia "$PROFILE_DIR/user.js"
 chmod 600 "$PROFILE_DIR/user.js"
 
-# Create a script to reinstall I2P in persistence
-cat > /home/amnesia/reinstall-i2p-in-persistence.sh << 'EOL'
+# If user chose persistence, create persistence setup scripts
+if [[ "$persistence_choice" == "2" ]]; then
+    # Create the persistence setup script
+    echo "[+] Creating persistence setup scripts..."
+    
+    cat > /home/amnesia/setup-i2p-persistence.sh << 'EOL'
 #!/bin/bash
 
-cat << 'EOF'
-**********************************
-*                                *
-*  I2P Persistence Setup Helper  *
-*                                *
-**********************************
+echo "**********************************"
+echo "*                                *"
+echo "*  I2P Persistence Setup Helper  *"
+echo "*                                *"
+echo "**********************************"
+echo ""
+echo "This script will set up I2P to persist across Tails restarts."
+echo "You should run this AFTER enabling persistence in Tails."
+echo ""
+echo "Have you already created a persistent volume with"
+echo "the 'Dotfiles' and 'Additional Software' features enabled? (y/n)"
+read -p "> " ANSWER
 
-This script will help you reinstall I2P after enabling
-persistence in Tails. Run this script once you have:
-
-1. Created a persistent volume in Tails
-2. Enabled the "Dotfiles" and "Additional Software" features
-3. Restarted Tails with persistence unlocked
-
-Do you want to continue? (y/n)
-EOF
-
-read -p " > " answer
-if [[ "$answer" != "y" ]]; then
-    echo "Aborted."
+if [[ "$ANSWER" != "y" ]]; then
+    echo ""
+    echo "Please follow these steps to enable persistence first:"
+    echo ""
+    echo "1. Shut down Tails"
+    echo "2. Restart Tails"
+    echo "3. At the welcome screen, choose 'Configure persistent volume'"
+    echo "4. Create a persistent volume with a strong password"
+    echo "5. Enable AT LEAST these persistence features:"
+    echo "   - Personal Data"
+    echo "   - Browser Bookmarks"
+    echo "   - Additional Software"
+    echo "   - Dotfiles"
+    echo "6. Restart Tails and unlock your persistent volume"
+    echo "7. Run this script again"
+    echo ""
     exit 1
 fi
 
-echo "Starting I2P installation in persistent storage..."
+echo ""
+echo "Setting up I2P persistence..."
 echo "You'll need to enter the administrator password."
 
-# Request admin privileges
 sudo bash -c "
-cd /home/amnesia
-wget -q https://github.com/PurpleI2P/i2pd/releases/download/2.56.0/i2pd_2.56.0-1bookworm1_amd64.deb
-apt-get update
-apt-get install -y libboost-program-options1.74.0 libminiupnpc17
-dpkg -i i2pd_2.56.0-1bookworm1_amd64.deb || apt-get -f -y install
-
-# Make sure I2P is installed in the persistent package list
+# Mark I2P packages for persistence
 apt-mark manual i2pd libboost-program-options1.74.0 libminiupnpc17
 
-echo 'I2P has been installed to your persistent storage.'
-echo 'Now you can restart Tails and I2P will automatically start!'
+# Create the persistent directory structure
+mkdir -p /home/amnesia/.persistent-i2p/scripts
+mkdir -p /home/amnesia/.persistent-i2p/config
+mkdir -p /home/amnesia/.persistent-i2p/autostart
+chown -R amnesia:amnesia /home/amnesia/.persistent-i2p
+
+# Move all our scripts to the persistent location
+cp /home/amnesia/.i2pd_script/enable_i2p.sh /home/amnesia/.persistent-i2p/scripts/
+cp /home/amnesia/.i2pd_script/disable_i2p.sh /home/amnesia/.persistent-i2p/scripts/
+cp /home/amnesia/.i2pd_script/tails-create-netns-i2p /home/amnesia/.persistent-i2p/scripts/
+chmod +x /home/amnesia/.persistent-i2p/scripts/*.sh
+chmod +x /home/amnesia/.persistent-i2p/scripts/tails-create-netns-i2p
+chown amnesia:amnesia /home/amnesia/.persistent-i2p/scripts/*
+
+# Backup key system config files
+cp /etc/i2pd/i2pd.conf /home/amnesia/.persistent-i2p/config/
+cp -r /etc/i2pd/tunnels.conf* /home/amnesia/.persistent-i2p/config/ 2>/dev/null
+chown -R amnesia:amnesia /home/amnesia/.persistent-i2p/config/
+
+# Create the Tails persistence hook script
+cat > /home/amnesia/.persistent-i2p/restore-i2p.sh << 'EOFS'
+#!/bin/bash
+
+# This script restores I2P configuration after Tails boot
+# It will be run by the startup hook
+
+# Wait for the system to fully initialize
+sleep 30
+
+# Create necessary directories
+mkdir -p /home/amnesia/.i2pd_script
+mkdir -p \"/home/amnesia/Tor Browser/localhost-tbb-proxy-pac\"
+
+# Copy our scripts back to working location
+cp /home/amnesia/.persistent-i2p/scripts/enable_i2p.sh /home/amnesia/.i2pd_script/
+cp /home/amnesia/.persistent-i2p/scripts/disable_i2p.sh /home/amnesia/.i2pd_script/
+cp /home/amnesia/.persistent-i2p/scripts/tails-create-netns-i2p /home/amnesia/.i2pd_script/
+chmod +x /home/amnesia/.i2pd_script/*.sh
+chmod +x /home/amnesia/.i2pd_script/tails-create-netns-i2p
+
+# Recreate desktop shortcuts
+cat > /home/amnesia/Desktop/enable_i2p.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Exec=/home/amnesia/.i2pd_script/enable_i2p.sh
+Name=Enable I2P
+GenericName=I2P
+StartupNotify=true
+Categories=Network;
+EOF
+
+cat > /home/amnesia/Desktop/disable_i2p.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Exec=/home/amnesia/.i2pd_script/disable_i2p.sh
+Name=Disable I2P
+GenericName=I2P
+StartupNotify=true
+Categories=Network;
+EOF
+
+cat > /home/amnesia/Desktop/i2p-console.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Exec=firefox http://10.200.1.1:7070
+Name=I2P Console
+Comment=Access I2P Router Console
+Icon=web-browser
+Terminal=false
+Categories=Network;
+EOF
+
+chmod +x /home/amnesia/Desktop/*.desktop
+
+# Recreate proxy.pac file
+cat > \"/home/amnesia/Tor Browser/localhost-tbb-proxy-pac/proxy.pac\" << 'EOF'
+function FindProxyForURL(url, host)
+{
+  // Direct access to I2P console
+  if (shExpMatch(host, \"10.200.1.1\") || shExpMatch(host, \"127.0.0.1:7070\")) {
+    return \"DIRECT\";
+  }
+  // Route I2P traffic through I2P
+  if (shExpMatch(host, \"*.i2p$\")) {
+    return \"SOCKS 127.0.0.1:4447\";
+  }
+  // Everything else through Tor
+  return \"SOCKS 127.0.0.1:9050\";
+}
+EOF
+
+chmod +x \"/home/amnesia/Tor Browser/localhost-tbb-proxy-pac/proxy.pac\"
+
+# Run the enable script to set everything up
+/home/amnesia/.i2pd_script/enable_i2p.sh
+
+# Notify that persistence restoration is complete
+notify-send \"I2P persistence restored\" \"I2P has been automatically configured\" || true
+EOFS
+
+chmod +x /home/amnesia/.persistent-i2p/restore-i2p.sh
+chown amnesia:amnesia /home/amnesia/.persistent-i2p/restore-i2p.sh
+
+# Create autostart entry in the persistent location
+mkdir -p /home/amnesia/.config/autostart
+cat > /home/amnesia/.config/autostart/i2p-persistence.desktop << 'EOAUTO'
+[Desktop Entry]
+Type=Application
+Exec=/home/amnesia/.persistent-i2p/restore-i2p.sh
+Name=I2P Persistence Restore
+Comment=Restores I2P configuration on Tails boot
+Terminal=false
+Hidden=false
+X-GNOME-Autostart-enabled=true
+EOAUTO
+
+chmod +x /home/amnesia/.config/autostart/i2p-persistence.desktop
+chown amnesia:amnesia /home/amnesia/.config/autostart/i2p-persistence.desktop
+
+echo 'I2P persistence setup complete.'
 "
 
-echo "Installation complete!"
-echo "I2P will be automatically started on next boot!"
+echo ""
+echo "I2P persistence setup is complete!"
+echo ""
+echo "Now I2P will be automatically restored when you restart Tails"
+echo "with your persistent volume unlocked."
+echo ""
+echo "You may still need to click the 'Enable I2P' desktop icon"
+echo "after booting if automatic restoration fails."
 EOL
 
-chmod +x /home/amnesia/reinstall-i2p-in-persistence.sh
-chown amnesia:amnesia /home/amnesia/reinstall-i2p-in-persistence.sh
+    chmod +x /home/amnesia/setup-i2p-persistence.sh
+    chown amnesia:amnesia /home/amnesia/setup-i2p-persistence.sh
+    
+    # Create a desktop shortcut for the persistence setup
+    cat > /home/amnesia/Desktop/setup-i2p-persistence.desktop << 'EOL'
+[Desktop Entry]
+Type=Application
+Exec=/home/amnesia/setup-i2p-persistence.sh
+Name=Setup I2P Persistence
+Comment=Configure I2P to persist across Tails restarts
+Terminal=true
+Categories=Network;
+EOL
+
+    chmod +x /home/amnesia/Desktop/setup-i2p-persistence.desktop
+    chown amnesia:amnesia /home/amnesia/Desktop/setup-i2p-persistence.desktop
+fi
 
 echo ""
 echo "IMPORTANT: Wait 2-5 minutes for I2P to connect properly."
@@ -576,25 +750,30 @@ echo "4. Visit the I2P console and add address book subscriptions to improve sit
 echo ""
 echo "###############################"
 echo ""
-echo "PERSISTENCE AND AUTO-START INFORMATION:"
-echo ""
-echo "1. To make I2P persist across Tails restarts:"
-echo "   - Configure a persistent volume in Tails (if not already done)"
-echo "   - Enable at least the 'Dotfiles' and 'Additional Software' persistence features"
-echo "   - Run the script at /home/amnesia/reinstall-i2p-in-persistence.sh after enabling persistence"
-echo ""
-echo "2. Auto-start has been configured:"
-echo "   - I2P will automatically start when you boot Tails with persistence enabled"
-echo "   - This ensures you don't need to manually enable I2P each time"
-echo ""
-echo "3. You can still control I2P manually using the desktop icons:"
-echo "   - 'Enable I2P' to manually start I2P"
-echo "   - 'Disable I2P' to turn it off"
-echo ""
-echo "###############################"
-echo ""
+
+if [[ "$persistence_choice" == "2" ]]; then
+    echo "PERSISTENCE SETUP INSTRUCTIONS:"
+    echo ""
+    if [[ "$persistence_exists" != "y" ]]; then
+        echo "You've chosen to set up I2P with persistence, but you don't have"
+        echo "a persistent volume configured yet. Please follow these steps:"
+        echo ""
+        echo "1. Shut down Tails"
+        echo "2. Restart Tails and configure a persistent volume at the welcome screen"
+        echo "3. Enable at least the 'Dotfiles' and 'Additional Software' features"
+        echo "4. Restart Tails and unlock your persistent volume"
+        echo "5. Run the 'Setup I2P Persistence' shortcut on your desktop"
+        echo ""
+    else
+        echo "A 'Setup I2P Persistence' shortcut has been created on your desktop."
+        echo "Run it to complete the persistence setup for I2P."
+        echo ""
+    fi
+    echo "###############################"
+    echo ""
+fi
+
 echo "[+] All done. Exiting..."
 
 # Try to send notifications if possible
 notify-send "I2P installation completed" 2>/dev/null || true
-notify-send "Browser configured with enhanced HTTPS-only mode disabling" 2>/dev/null || true
