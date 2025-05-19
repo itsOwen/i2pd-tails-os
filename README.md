@@ -15,8 +15,7 @@ This script allows you to add I2P functionality to Tails OS, providing access to
 - **Desktop Integration**: Simple desktop shortcuts to enable/disable I2P
 - **Console Access**: Direct access to the I2P router console for monitoring and configuration
 - **Browser Auto-configuration**: Automatically configures Tor Browser for seamless I2P access
-- **Persistence Support**: Compatible with Tails persistence for keeping I2P across reboots
-- **Auto-start Option**: Can automatically enable I2P when Tails starts (with persistence)
+- **Persistence Support**: Not Yet
 
 ## 📋 Requirements
 
@@ -87,17 +86,6 @@ The script:
    - .onion domains → Tor network
    - All other traffic → Tor network
 4. Modifies browser settings for seamless operation
-
-## 🔄 Persistence Across Reboots
-
-To maintain I2P after Tails restart:
-
-1. Configure a persistent volume in Tails
-2. Enable "Dotfiles" and "Additional Software" persistence
-3. Run the provided helper script after enabling persistence:
-```bash
-~/reinstall-i2p-in-persistence.sh
-```
 
 ## ❓ Troubleshooting
 
